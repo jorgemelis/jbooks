@@ -107,11 +107,20 @@ enum BookIndexer {
         let total = files.count
 
         for (i, file) in files.enumerated() {
-            if let prev = previous[file.relativePath],
-               prev.fileSize == file.fileSize,
-               prev.modified == file.modified {
+            let prev = previous[file.relativePath]
+            let metaFresh = prev.map { $0.fileSize == file.fileSize && $0.modified == file.modified } ?? false
+            let coverExists = CoverCache.shared.has(file.relativePath)
+
+            if metaFresh, coverExists, let prev {
+                // Nothing to do — reuse the cached entry without opening the file.
                 books.append(prev)
-            } else if let entry = await indexOne(file, opener: opener, assetRetriever: assetRetriever) {
+            } else if let entry = await openAndIndex(
+                file,
+                reusing: metaFresh ? prev : nil,
+                extractCover: !coverExists,
+                opener: opener,
+                assetRetriever: assetRetriever
+            ) {
                 books.append(entry)
             } else {
                 failed.append(file.relativePath)
@@ -124,8 +133,15 @@ enum BookIndexer {
         return (books, failed)
     }
 
-    private static func indexOne(
+    /// Opens the publication once to (re)build its metadata entry and/or
+    /// extract its cover thumbnail. Returns nil if the file can't be opened.
+    ///
+    /// When `reusing` is non-nil the metadata is kept as-is (the file was only
+    /// reopened to generate a missing cover).
+    private static func openAndIndex(
         _ file: Library.ScannedFile,
+        reusing existing: IndexedBook?,
+        extractCover: Bool,
         opener: PublicationOpener,
         assetRetriever: AssetRetriever
     ) async -> IndexedBook? {
@@ -134,6 +150,14 @@ enum BookIndexer {
         guard case let .success(publication) = await opener.open(asset: asset, allowUserInteraction: false) else {
             return nil
         }
+
+        if extractCover,
+           case let .success(image) = await publication.coverFitting(maxSize: CoverCache.pixelSize),
+           let image {
+            CoverCache.shared.store(image, for: file.relativePath)
+        }
+
+        if let existing { return existing }
 
         let rawTitle = publication.metadata.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let cleanTitle = sanitizeTitle(rawTitle)

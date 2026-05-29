@@ -1,10 +1,13 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @State private var books: [Book] = []
     @State private var loaded = false
     @State private var indexProgress: (done: Int, total: Int)?
     @State private var query = ""
+    /// Bumped when indexing finishes so rows reload covers generated this run.
+    @State private var coversToken = 0
 
     private var filteredBooks: [Book] {
         guard !query.isEmpty else { return books }
@@ -63,13 +66,16 @@ struct ContentView: View {
 
     @ViewBuilder
     private func row(for book: Book) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(book.title)
-                .font(.title3)
-            if !book.author.isEmpty {
-                Text(book.author)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+        HStack(spacing: 12) {
+            CoverView(relativePath: book.relativePath, reloadToken: coversToken)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(book.title)
+                    .font(.title3)
+                if !book.author.isEmpty {
+                    Text(book.author)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 3)
@@ -86,8 +92,40 @@ struct ContentView: View {
             indexProgress = (done, total)
         }
         books = Library.books(from: result.books)
+        coversToken += 1
         indexProgress = nil
         #endif
+    }
+}
+
+/// Cover thumbnail for a list row. Loads from `CoverCache` off the main
+/// thread; shows a placeholder until (or unless) a cover is available.
+private struct CoverView: View {
+    let relativePath: String
+    let reloadToken: Int
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "book.closed")
+                    .imageScale(.large)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(width: 46, height: 66)
+        .background(Color(uiColor: .secondarySystemFill))
+        .clipShape(RoundedRectangle(cornerRadius: 4))
+        .task(id: "\(relativePath)#\(reloadToken)") {
+            if image == nil {
+                let path = relativePath
+                image = await Task.detached { CoverCache.shared.image(for: path) }.value
+            }
+        }
     }
 }
 

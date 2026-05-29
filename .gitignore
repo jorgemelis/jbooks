@@ -2,6 +2,10 @@
 build/
 DerivedData/
 
+# Generated cover thumbnails and scratch space (regenerated from the EPUBs)
+covers/
+tmp/
+
 # XcodeGen generates the project from project.yml — it is the source of truth.
 *.xcodeproj
 

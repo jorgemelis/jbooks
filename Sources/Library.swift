@@ -6,6 +6,7 @@ struct Book: Identifiable, Hashable {
     let title: String
     let author: String
     let category: String
+    let relativePath: String
     var url: URL { id }
 }
 
@@ -91,14 +92,16 @@ enum Library {
                         id: file.url,
                         title: meta.title.isEmpty ? fallbackTitle(file.url) : meta.title,
                         author: meta.authors.joined(separator: ", "),
-                        category: meta.category
+                        category: meta.category,
+                        relativePath: file.relativePath
                     )
                 }
                 return Book(
                     id: file.url,
                     title: fallbackTitle(file.url),
                     author: "",
-                    category: file.category
+                    category: file.category,
+                    relativePath: file.relativePath
                 )
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
@@ -114,7 +117,8 @@ enum Library {
                     id: url,
                     title: meta.title.isEmpty ? fallbackTitle(url) : meta.title,
                     author: meta.authors.joined(separator: ", "),
-                    category: meta.category
+                    category: meta.category,
+                    relativePath: meta.relativePath
                 )
             }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
