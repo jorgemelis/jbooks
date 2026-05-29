@@ -15,10 +15,12 @@ struct ReaderView: View {
     }
 
     @State private var state: LoadState = .loading
-    @State private var fontSize: Double = 1.0
+    @AppStorage("readerFontSize") private var fontSize: Double = 1.0
 
     private let fontStep = 0.1
     private let fontRange = 0.5 ... 3.0
+
+    private var relativePath: String { Library.relativePath(of: book.url) }
 
     var body: some View {
         Group {
@@ -32,8 +34,12 @@ struct ReaderView: View {
                     description: Text(message)
                 )
             case let .ready(publication):
-                EPUBContainer(publication: publication, fontSize: fontSize)
-                    .ignoresSafeArea(edges: .bottom)
+                EPUBContainer(
+                    publication: publication,
+                    fontSize: fontSize,
+                    relativePath: relativePath
+                )
+                .ignoresSafeArea(edges: .bottom)
             }
         }
         .navigationTitle(book.title)
@@ -95,16 +101,18 @@ struct ReaderView: View {
 private struct EPUBContainer: UIViewControllerRepresentable {
     let publication: Publication
     let fontSize: Double
+    let relativePath: String
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(relativePath: relativePath) }
 
     func makeUIViewController(context: Context) -> UIViewController {
         do {
             let navigator = try EPUBNavigatorViewController(
                 publication: publication,
-                initialLocation: nil,
+                initialLocation: PositionStore.locator(forRelativePath: relativePath),
                 config: .init(preferences: EPUBPreferences(fontSize: fontSize))
             )
+            navigator.delegate = context.coordinator
             context.coordinator.navigator = navigator
             return navigator
         } catch {
@@ -128,7 +136,21 @@ private struct EPUBContainer: UIViewControllerRepresentable {
         context.coordinator.navigator?.submitPreferences(EPUBPreferences(fontSize: fontSize))
     }
 
-    final class Coordinator {
+    /// Holds the navigator and persists the reading position as it changes.
+    final class Coordinator: EPUBNavigatorDelegate {
         var navigator: EPUBNavigatorViewController?
+        let relativePath: String
+
+        init(relativePath: String) {
+            self.relativePath = relativePath
+        }
+
+        func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
+            PositionStore.save(locator, forRelativePath: relativePath)
+        }
+
+        func navigator(_ navigator: any ViewportObservingNavigator, viewportDidChange viewport: NavigatorViewport?) {}
+
+        func navigator(_ navigator: Navigator, presentError error: NavigatorError) {}
     }
 }
