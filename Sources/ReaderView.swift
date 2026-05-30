@@ -4,6 +4,31 @@ import ReadiumShared
 import ReadiumStreamer
 import ReadiumNavigator
 
+/// Drives a reading session: holds the navigator, tracks the current location,
+/// and exposes jump / bookmark actions to the SwiftUI views.
+@MainActor final class ReaderController: ObservableObject {
+    let relativePath: String
+    weak var navigator: EPUBNavigatorViewController?
+    @Published var currentLocator: Locator?
+
+    init(relativePath: String) { self.relativePath = relativePath }
+
+    func go(to locator: Locator) {
+        let navigator = navigator
+        Task { _ = await navigator?.go(to: locator) }
+    }
+
+    @discardableResult
+    func addBookmark() -> Bool {
+        guard let locator = currentLocator, let json = try? locator.jsonString() else { return false }
+        BookmarksStore.add(
+            Bookmark(id: UUID(), name: Bookmark.defaultName(for: locator), locatorJSON: json),
+            forRelativePath: relativePath
+        )
+        return true
+    }
+}
+
 /// Opens an EPUB with Readium and renders it with the EPUB navigator.
 struct ReaderView: View {
     let book: Book
@@ -16,11 +41,18 @@ struct ReaderView: View {
 
     @State private var state: LoadState = .loading
     @AppStorage("readerFontSize") private var fontSize: Double = 1.0
+    @StateObject private var controller: ReaderController
+    @State private var showingBookmarks = false
 
     private let fontStep = 0.1
     private let fontRange = 0.5 ... 3.0
 
-    private var relativePath: String { Library.relativePath(of: book.url) }
+    init(book: Book) {
+        self.book = book
+        _controller = StateObject(
+            wrappedValue: ReaderController(relativePath: Library.relativePath(of: book.url))
+        )
+    }
 
     var body: some View {
         Group {
@@ -37,7 +69,7 @@ struct ReaderView: View {
                 EPUBContainer(
                     publication: publication,
                     fontSize: fontSize,
-                    relativePath: relativePath
+                    controller: controller
                 )
                 .ignoresSafeArea(edges: .bottom)
             }
@@ -60,8 +92,24 @@ struct ReaderView: View {
                         Image(systemName: "textformat.size.larger")
                     }
                     .disabled(fontSize >= fontRange.upperBound)
+
+                    Button {
+                        controller.addBookmark()
+                    } label: {
+                        Image(systemName: "bookmark")
+                    }
+                    .disabled(controller.currentLocator == nil)
+
+                    Button {
+                        showingBookmarks = true
+                    } label: {
+                        Image(systemName: "list.bullet")
+                    }
                 }
             }
+        }
+        .sheet(isPresented: $showingBookmarks) {
+            BookmarksSheet(controller: controller)
         }
         .task { await open() }
     }
@@ -90,21 +138,21 @@ struct ReaderView: View {
             case let .failure(error):
                 state = .failed("EPUB no válido: \(error)")
             case let .success(publication):
-                RecentsStore.add(relativePath)
+                RecentsStore.add(controller.relativePath)
                 state = .ready(publication)
             }
         }
     }
 }
 
-/// Bridges Readium's UIKit `EPUBNavigatorViewController` into SwiftUI and
-/// applies the live font-size preference.
+/// Bridges Readium's UIKit `EPUBNavigatorViewController` into SwiftUI, applies
+/// the live font-size preference, and reports the location to the controller.
 private struct EPUBContainer: UIViewControllerRepresentable {
     let publication: Publication
     let fontSize: Double
-    let relativePath: String
+    let controller: ReaderController
 
-    func makeCoordinator() -> Coordinator { Coordinator(relativePath: relativePath) }
+    func makeCoordinator() -> Coordinator { Coordinator(controller: controller) }
 
     /// Preferences for the navigator. When the user scales the font, publisher
     /// styles are disabled so the font size actually changes — some EPUBs hard-
@@ -120,11 +168,12 @@ private struct EPUBContainer: UIViewControllerRepresentable {
         do {
             let navigator = try EPUBNavigatorViewController(
                 publication: publication,
-                initialLocation: PositionStore.locator(forRelativePath: relativePath),
+                initialLocation: PositionStore.locator(forRelativePath: controller.relativePath),
                 config: .init(preferences: preferences)
             )
             navigator.delegate = context.coordinator
             context.coordinator.navigator = navigator
+            controller.navigator = navigator
 
             // Turn pages with arrow keys, space bar and edge taps/clicks.
             let adapter = DirectionalNavigationAdapter()
@@ -153,18 +202,28 @@ private struct EPUBContainer: UIViewControllerRepresentable {
         context.coordinator.navigator?.submitPreferences(preferences)
     }
 
-    /// Holds the navigator and persists the reading position as it changes.
+    /// Persists the reading position and appends to the position history.
     final class Coordinator: EPUBNavigatorDelegate {
+        let controller: ReaderController
         var navigator: EPUBNavigatorViewController?
         var directionalAdapter: DirectionalNavigationAdapter?
-        let relativePath: String
+        private var lastHistoryProgress: Double?
 
-        init(relativePath: String) {
-            self.relativePath = relativePath
-        }
+        init(controller: ReaderController) { self.controller = controller }
 
         func navigator(_ navigator: Navigator, locationDidChange locator: Locator) {
-            PositionStore.save(locator, forRelativePath: relativePath)
+            let path = controller.relativePath
+            PositionStore.save(locator, forRelativePath: path)
+            controller.currentLocator = locator
+
+            // Append to history only on a meaningful move, to avoid logging
+            // every single page turn.
+            if let progress = locator.locations.totalProgression {
+                if lastHistoryProgress == nil || abs(progress - lastHistoryProgress!) >= 0.03 {
+                    PositionStore.recordHistory(locator, forRelativePath: path)
+                    lastHistoryProgress = progress
+                }
+            }
         }
 
         func navigator(_ navigator: any ViewportObservingNavigator, viewportDidChange viewport: NavigatorViewport?) {}
