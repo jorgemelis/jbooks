@@ -90,6 +90,7 @@ struct ReaderView: View {
             case let .failure(error):
                 state = .failed("EPUB no válido: \(error)")
             case let .success(publication):
+                RecentsStore.add(relativePath)
                 state = .ready(publication)
             }
         }
@@ -105,15 +106,31 @@ private struct EPUBContainer: UIViewControllerRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(relativePath: relativePath) }
 
+    /// Preferences for the navigator. When the user scales the font, publisher
+    /// styles are disabled so the font size actually changes — some EPUBs hard-
+    /// code their font size in CSS, which otherwise only grows the line spacing.
+    private var preferences: EPUBPreferences {
+        EPUBPreferences(
+            fontSize: fontSize,
+            publisherStyles: fontSize == 1.0 ? nil : false
+        )
+    }
+
     func makeUIViewController(context: Context) -> UIViewController {
         do {
             let navigator = try EPUBNavigatorViewController(
                 publication: publication,
                 initialLocation: PositionStore.locator(forRelativePath: relativePath),
-                config: .init(preferences: EPUBPreferences(fontSize: fontSize))
+                config: .init(preferences: preferences)
             )
             navigator.delegate = context.coordinator
             context.coordinator.navigator = navigator
+
+            // Turn pages with arrow keys, space bar and edge taps/clicks.
+            let adapter = DirectionalNavigationAdapter()
+            adapter.bind(to: navigator)
+            context.coordinator.directionalAdapter = adapter
+
             return navigator
         } catch {
             let label = UILabel()
@@ -133,12 +150,13 @@ private struct EPUBContainer: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ uiViewController: UIViewController, context: Context) {
-        context.coordinator.navigator?.submitPreferences(EPUBPreferences(fontSize: fontSize))
+        context.coordinator.navigator?.submitPreferences(preferences)
     }
 
     /// Holds the navigator and persists the reading position as it changes.
     final class Coordinator: EPUBNavigatorDelegate {
         var navigator: EPUBNavigatorViewController?
+        var directionalAdapter: DirectionalNavigationAdapter?
         let relativePath: String
 
         init(relativePath: String) {
