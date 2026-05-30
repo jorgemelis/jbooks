@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import ReadiumShared
 import ReadiumStreamer
 
@@ -151,9 +152,7 @@ enum BookIndexer {
             return nil
         }
 
-        if extractCover,
-           case let .success(image) = await publication.coverFitting(maxSize: CoverCache.pixelSize),
-           let image {
+        if extractCover, let image = await coverImage(for: publication) {
             CoverCache.shared.store(image, for: file.relativePath)
         }
 
@@ -172,6 +171,81 @@ enum BookIndexer {
             fileSize: file.fileSize,
             modified: file.modified
         )
+    }
+
+    /// Returns a cover thumbnail for the publication. First tries Readium's
+    /// detector (declared `cover` rel or first reading-order image); if that
+    /// finds nothing, falls back to any embedded bitmap whose path contains
+    /// "cover" — covers many EPUBs that ship a cover image without declaring
+    /// it in the OPF (which is why Readium misses them).
+    private static func coverImage(for publication: Publication) async -> UIImage? {
+        // 1) Readium's detector (declared `cover` rel or first reading-order image).
+        if case let .success(image) = await publication.coverFitting(maxSize: CoverCache.pixelSize),
+           let image {
+            return image
+        }
+        let all = publication.readingOrder + publication.resources + publication.links
+
+        // 2) A bitmap whose own path mentions "cover".
+        for link in all where link.mediaType?.isBitmap == true && link.href.lowercased().contains("cover") {
+            if let image = await loadImage(link, from: publication) { return image }
+        }
+
+        // 3) A "cover" HTML page that references an image (common when the OPF
+        //    doesn't declare the cover, so Readium misses it).
+        for page in all where isHTML(page) && page.href.lowercased().contains("cover") {
+            guard
+                let resource = publication.get(page),
+                let data = try? await resource.read().get(),
+                let html = String(data: data, encoding: .utf8),
+                let ref = firstImageReference(in: html)
+            else { continue }
+            let decodedRef = ref.removingPercentEncoding ?? ref
+            let target = (decodedRef as NSString).lastPathComponent
+            guard !target.isEmpty, let link = all.first(where: {
+                $0.mediaType?.isBitmap == true
+                    && ((($0.href.removingPercentEncoding ?? $0.href) as NSString).lastPathComponent == target)
+            }) else { continue }
+            if let image = await loadImage(link, from: publication) { return image }
+        }
+        return nil
+    }
+
+    private static func loadImage(_ link: Link, from publication: Publication) async -> UIImage? {
+        guard
+            let resource = publication.get(link),
+            let data = try? await resource.read().get(),
+            let image = UIImage(data: data),
+            min(image.size.width, image.size.height) >= 200
+        else { return nil }
+        return downscale(image, maxSize: CoverCache.pixelSize)
+    }
+
+    private static func isHTML(_ link: Link) -> Bool {
+        let h = link.href.lowercased()
+        return h.hasSuffix(".xhtml") || h.hasSuffix(".html") || h.hasSuffix(".htm")
+    }
+
+    private static func firstImageReference(in html: String) -> String? {
+        let pattern = #"(?:src|xlink:href|href)\s*=\s*["']([^"']+\.(?:jpe?g|png|gif))["']"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return nil
+        }
+        let range = NSRange(html.startIndex..., in: html)
+        guard
+            let match = regex.firstMatch(in: html, range: range),
+            let captured = Range(match.range(at: 1), in: html)
+        else { return nil }
+        return String(html[captured])
+    }
+
+    private static func downscale(_ image: UIImage, maxSize: CGSize) -> UIImage {
+        let scale = min(maxSize.width / image.size.width, maxSize.height / image.size.height, 1)
+        guard scale < 1 else { return image }
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        return UIGraphicsImageRenderer(size: size).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     /// Atomic write (temp + rename, handled by `.atomic`) so a cloud-sync
