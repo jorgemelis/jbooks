@@ -27,11 +27,12 @@ enum Library {
         return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
     }
 
+    /// Whether a library folder is configured (false on iOS until the user
+    /// picks one).
+    static var hasFolder: Bool { LibraryFolder.rootURL != nil }
+
     static var rootURL: URL {
-        homeURL.appendingPathComponent(
-            "Library/CloudStorage/OneDrive-Personal/_books/2read",
-            isDirectory: true
-        )
+        LibraryFolder.rootURL ?? LibraryFolder.defaultMacURL
     }
 
     /// An EPUB found on disk, with the fingerprint used for incremental indexing.

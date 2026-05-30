@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @State private var books: [Book] = []
@@ -8,6 +9,8 @@ struct ContentView: View {
     @State private var query = ""
     /// Bumped when indexing finishes so rows reload covers generated this run.
     @State private var coversToken = 0
+    @State private var hasFolder = true
+    @State private var showingImporter = false
 
     private var filteredBooks: [Book] {
         guard !query.isEmpty else { return books }
@@ -50,14 +53,32 @@ struct ContentView: View {
                 ReaderView(book: book)
             }
             .overlay {
-                if loaded && books.isEmpty {
+                if !hasFolder {
+                    ContentUnavailableView {
+                        Label("Elige tu carpeta de libros", systemImage: "folder")
+                    } description: {
+                        Text("Selecciona la carpeta con tus EPUB (p. ej. tu carpeta 2read de OneDrive).")
+                    } actions: {
+                        Button("Elegir carpeta…") { showingImporter = true }
+                            .buttonStyle(.borderedProminent)
+                    }
+                } else if loaded && books.isEmpty {
                     ContentUnavailableView(
                         "Sin libros",
                         systemImage: "books.vertical",
-                        description: Text("No se encontraron EPUB en _books/2read")
+                        description: Text("No se encontraron EPUB en la carpeta elegida.")
                     )
                 } else if !query.isEmpty && filteredBooks.isEmpty {
                     ContentUnavailableView.search(text: query)
+                }
+            }
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.folder]
+            ) { result in
+                if case let .success(url) = result {
+                    LibraryFolder.setFolder(url)
+                    Task { await start() }
                 }
             }
         }
@@ -82,6 +103,12 @@ struct ContentView: View {
     }
 
     private func start() async {
+        hasFolder = Library.hasFolder
+        guard hasFolder else {
+            loaded = true
+            return
+        }
+
         // Fast: show whatever the cached index + disk already know.
         books = Library.cachedBooks()
         loaded = true
